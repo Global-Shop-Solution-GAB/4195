@@ -1,0 +1,394 @@
+Program.Sub.Preflight.Start
+
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+F.Intrinsic.Control.SetErrorHandler("Main_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+
+'This will be triggered from each New Sales Order, and when a new line is added to a Sales Order. 
+'Coded by: WAW
+'Date: 09/26/2016
+
+'open connection
+F.odbc.Connection!conx.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass,1000000)
+
+'check to see if the lines save hook has fired
+f.Intrinsic.Control.If(v.Caller.Hook,=,11872)
+f.Intrinsic.Control.AndIf(v.Caller.Switches,=,"N")
+	'call the lines sub
+	f.Intrinsic.Control.CallSub(lines)
+f.Intrinsic.Control.endif	
+
+'check to see if the completed line hook has fired
+f.Intrinsic.Control.If(v.Caller.Hook,=,34700)
+	'call the sales review sub	
+	f.Intrinsic.Control.CallSub(EngineeringReview)	
+f.Intrinsic.Control.EndIf
+
+'if the signoff happens and all steps are complete this closes the workflow
+f.Intrinsic.Control.If(v.Caller.Hook,=,34701)
+	'call the sales review sub	
+	f.Intrinsic.Control.CallSub(EngineeringReview)	
+f.Intrinsic.Control.EndIf
+
+'check to see if the user clicks the GenWO button
+f.Intrinsic.Control.If(v.Caller.Hook,=,12340)
+	'call the genwo sub
+	f.Intrinsic.Control.CallSub(genwo)	
+f.Intrinsic.Control.endif	
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Main_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4195_SO_Lines.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub(unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Main.End
+
+Program.Sub.Lines.Start
+F.Intrinsic.Control.SetErrorHandler("Lines_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+v.Local.sorderno.Declare(string)
+v.Local.sorderline.Declare(string)
+v.Local.ssql.Declare(string)
+v.Local.sbomline.Declare(string)
+v.Local.srouter.Declare(String)
+v.Local.dduedate.Declare(date)
+v.Local.iwf.Declare(long)
+v.Local.stitle.Declare(string)
+v.Local.istatus.Declare(long)
+v.Local.ssql2.Declare(string)
+v.Local.iret.Declare(long)
+
+'get the ID to create the workflow
+f.Global.WorkFlow.GetTemplateIDFromTitle("SO Line Level Workflow",v.Local.iWF)
+
+'set the variables
+v.Local.sorderno.set(v.Passed.000003)
+f.Intrinsic.String.LPad(v.Local.sorderno,"0",7,v.Local.sorderno)
+'v.Local.sorderline.Set(v.passed.000051)
+'f.Intrinsic.String.LPad(v.Local.sorderline,"0",3,v.Local.sorderline)
+
+'query for the meta data to see if there is already a workflow created
+f.Intrinsic.String.Build("Select * from ATG_WF_HEADER where META_1 = '{0}' and TITLE = '{1}'",v.Local.sorderno.Trim,"SO Line Level Workflow",v.Local.ssql)
+F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,True)
+	'set the due date
+	v.Local.dduedate.Set(v.Ambient.Date)
+	f.Intrinsic.Date.DateAdd("D",1,v.Local.dduedate,v.Local.dduedate)
+	'get the ID to create the workflow
+	f.Global.WorkFlow.GetTemplateIDFromTitle("SO Line Level Workflow",v.Local.iWF)
+	f.Intrinsic.Control.If(v.Local.iWF,=,-1)
+		'inform the user there is no template
+		f.Intrinsic.UI.Msgbox("There are no Workflow templates with the title SO Line Level Workflow")
+		f.Intrinsic.Control.CallSub(unload)
+	f.Intrinsic.Control.Else
+		'get the title of the template to create the workflow
+		f.Intrinsic.String.Build("Select TITLE, STATUS, T_TYPE from ATG_WFT_HEADER where WFT_ID = '{0}'",v.Local.iWF.Trim,v.Local.ssql2)
+		F.ODBC.Connection!conx.OpenRecordsetRO("rst2",V.Local.sSQL2)
+		F.Intrinsic.Control.If(V.ODBC.conx!rst2.EOF,=,False)
+			v.Local.stitle.Set(v.ODBC.conx!rst2.FieldValTrim!TITLE)
+			v.Local.istatus.Set(v.ODBC.conx!rst2.FieldValTrim!STATUS)
+		f.Intrinsic.Control.EndIf
+		F.ODBC.conx!rst2.Close
+	f.Intrinsic.Control.EndIf	
+	'create the workflow from the template
+	f.Global.WorkFlow.CreateFromTemplate(v.Local.iWF.Trim,v.Local.stitle.trim,v.Ambient.Date,v.Local.dduedate,v.Caller.User,v.Local.istatus.Long,v.Local.iret)
+	'set the SO number as Meta 1
+	F.Global.WorkFlow.SetMetaData(v.Local.iret,1,1,v.Local.sorderno.Trim)
+	'set the order number as Meta 1 for the 2 lines
+	F.Global.WorkFlow.SetMetaData(v.Local.iret,0,1,v.Local.sorderno.Trim)
+f.Intrinsic.Control.EndIf
+f.ODBC.conx!rst.Close
+
+'This will be triggered from each New Sales Order, and when a new line is added to a Sales Order. 
+'For the new Line a check will need to be performed when the line is saved to see if there is an existing router. If there is the Router Complete Flag will need to be unchecked. 
+'check to see if there is a router using the parent part on the order
+f.Intrinsic.String.Build("Select BOM_PARENT from V_ORDER_LINES where ORDER_NO = '{0}'",v.Local.sorderno.Trim,v.Local.ssql)
+F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+	v.Local.sbomline.Set(v.ODBC.conx!rst.FieldValTrim!BOM_PARENT)
+f.Intrinsic.Control.endif	
+f.ODBC.conx!rst.Close
+
+'get the router part that is the parent
+f.Intrinsic.String.Build("Select PART from V_ORDER_LINES where ORDER_NO = '{0}' and RECORD_NO = '{1}'",v.Local.sorderno.Trim,v.Local.sbomline.Trim,v.Local.ssql)
+F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+	v.Local.srouter.Set(v.ODBC.conx!rst.FieldValTrim!PART)
+	'set the meta 2 as the part number for wo gen check later
+	F.Global.WorkFlow.SetMetaData(v.Local.iwf,1,2,v.Local.srouter.Trim)
+	'set the meta 2 data as the router for a wo gen check later
+	F.Global.WorkFlow.SetMetaData(v.Local.iWF,0,2,v.Local.srouter.Trim)
+f.Intrinsic.Control.EndIf
+f.ODBC.conx!rst.Close
+
+''make sure the router complete flag is not flagged 
+f.Intrinsic.String.Build("Select BOM_COMPLETE from BOM_MSTR where PARENT = '{0}'",v.Local.srouter.Trim,v.Local.ssql)
+F.ODBC.Connection!conx.openrecordsetrW("rst",V.Local.ssql)
+''if there is a flag unflagg it for that router
+f.Intrinsic.Control.If(v.ODBC.conx!rst.EOF,=,True)
+f.Intrinsic.Control.Else
+	F.ODBC.conx!rst.Set!BOM_COMPLETE("N")
+	F.ODBC.conx!rst.Update
+f.Intrinsic.Control.EndIf
+F.ODBC.conx!rst.Close
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Lines_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4195_SO_Lines.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub(unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Lines.End
+
+Program.Sub.Unload.Start
+F.Intrinsic.Control.SetErrorHandler("Unload_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+
+'close connection to the database
+F.ODBC.Connection!conx.Close
+
+F.Intrinsic.Control.End
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Unload_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4195_SO_Lines.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.End
+
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Unload.End
+
+Program.Sub.EngineeringReview.Start
+F.Intrinsic.Control.SetErrorHandler("EngineeringReview_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+v.Local.iwf.Declare(long)
+v.Local.ssql.Declare(string)
+v.Local.spart.Declare(string)
+v.Local.ssql2.Declare(string)
+v.Local.smsg.Declare(string)
+v.Local.smsgfinal.Declare(string)
+
+f.Global.WorkFlow.GetTemplateIDFromTitle("SO Line Level Workflow",v.Local.iWF)
+
+'check to make sure user JGATES has approved this
+f.Intrinsic.String.Build("Select COMPLETED_BY, META_2 from ATG_WF_LINES where DESCRIPTION = '{0}' and WF_ID = '{1}' and LINE = '{2}'","Engineering Review",v.Local.iwf.Trim,"1",v.local.ssql)
+F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+	v.Local.spart.Set(v.ODBC.conx!rst.FieldValTrim!META_2)
+	'check to see if  JGATES completed the first line, if not inform the user and override the Gen WO
+	f.Intrinsic.Control.If(v.ODBC.conx!rst.FieldValTrim!COMPLETED_BY,<>," JGATES")
+		f.Intrinsic.UI.Msgbox("User JGATES needs to complete the Engineering Review step of the SO Line Level Workflow prior to completing this step")
+		V.Passed.999999.Set(1)
+		f.Intrinsic.Control.CallSub(unload)
+		f.Intrinsic.Control.ExitSub
+	f.Intrinsic.Control.EndIf
+f.Intrinsic.Control.EndIf
+f.ODBC.conx!rst.Close
+
+'if the completed by is JGATES we assume we are moving to the next line, the review and create work order step
+'check to make sure the completed by is not blank for the second line
+f.Intrinsic.String.Build("Select COMPLETED_BY, WF_ID ATG_WF_LINES where DESCRIPTION = '{0}' and WF_ID = '{1}' and LINE = '{2}'","Review and Create Work Order (Production Control)",v.Local.iwf.Trim,"2",v.Local.ssql)
+F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+'make sure all routers on the review and create wo step have all been flagged as complete
+F.Intrinsic.Control.DoUntil(V.ODBC.conx!rst.EOF,=,true)
+	'make sure that the completed by is not blank, if it is not check to make sure the complted flag is flagged Y
+	f.Intrinsic.Control.If(v.ODBC.conx!rst.FieldValTrim!COMPLETED_BY,<>,"")
+		''make sure the router complete flag is flagged 
+		f.Intrinsic.String.Build("Select BOM_COMPLETE from BOM_MSTR where PARENT = '{0}'",v.Local.spart.Trim,v.Local.ssql2)
+		F.ODBC.Connection!conx.openrecordsetro("rst2",V.Local.ssql2)
+		'if the BOM is not flagged as complete inform the user of all that are not flagged as complete
+		f.Intrinsic.Control.If(v.ODBC.conx!rst2.FieldValTrim,<>,"Y")
+			f.Intrinsic.Control.If(v.Local.smsg,=,"")
+				v.Local.smsg.Set(v.ODBC.conx!rst.FieldValTrim!WF_ID)
+			f.Intrinsic.Control.Else
+				'build the message string for the user
+				f.Intrinsic.String.Build("{0}{1}{2}",v.Local.smsg,v.Ambient.NewLine,v.ODBC.conx!rst.FieldValTrim!WF_ID)
+			f.Intrinsic.Control.EndIf
+		f.Intrinsic.Control.EndIf
+	f.Intrinsic.Control.EndIf
+'loop through the records and get all instances where the part is not flagged as complete
+F.ODBC.conx!rst.MoveNext
+Function.Intrinsic.Control.Loop
+f.Intrinsic.Control.EndIf
+f.ODBC.conx!rst.Close
+
+'if the msg string is not blank display it
+f.Intrinsic.Control.If(v.Local.smsg,<>,"")
+f.Intrinsic.String.Build("{0}: {1}","The following Workflow IDs need their Review and Create Work Order steps completed prior to generating a work order",v.local.smsg,v.local.smsgfinal)
+	'set the override flag to 1 and stop the user from creating a work order
+	f.Intrinsic.UI.Msgbox(v.Local.smsgfinal.Trim)
+	V.Passed.999999.Set(1)
+	f.Intrinsic.Control.CallSub(unload)
+	f.Intrinsic.Control.ExitSub
+f.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("EngineeringReview_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4195_SO_Lines.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub(unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.EngineeringReview.End
+
+Program.Sub.GenWo.Start
+F.Intrinsic.Control.SetErrorHandler("GenWo_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+v.Local.sorderno.Declare(string)
+v.Local.sorderline.Declare(string)
+v.Local.ssql.Declare(String)
+
+v.Local.spart.Declare(string)
+v.Local.srev.Declare(String)
+v.Local.bgenwo.Declare(boolean,false)
+
+'set the part an rev
+v.Local.spart.Set(v.Passed.000052)
+v.Local.srev.Set(v.Passed.000053)
+
+'put the part together
+f.Intrinsic.String.GSSPartString(v.Local.spart.Trim,v.Local.srev.Trim,v.Local.spart.Trim)
+
+'see if there are any incomplete steps with the router 
+f.Intrinsic.String.Build("Select * from ATG_WF_LINES where META_2 = '{0}'",v.Local.spart.Trim,v.Local.ssql)
+F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+f.Intrinsic.Control.If(v.ODBC.conx!rst.EOF,=,True)
+	v.Local.bgenwo.Set(True)
+f.Intrinsic.Control.Else	
+	F.Intrinsic.Control.DoUntil(V.ODBC.conx!rst.EOF,=,False)
+		f.Intrinsic.Control.If(v.ODBC.conx!rst.FieldValTrim!COMPLETED_BY,<>,"")
+			v.Local.bgenwo.Set(True)
+		f.Intrinsic.Control.EndIf
+	F.ODBC.conx!rst.MoveNext
+	Function.Intrinsic.Control.Loop
+f.Intrinsic.Control.EndIf
+f.ODBC.conx!rst.Close
+
+'if the boolean is flagged as true
+f.Intrinsic.Control.If(v.Local.bgenwo,=,True)
+	'set the variables
+	v.Local.sorderno.set(v.Passed.000060)
+	f.Intrinsic.String.LPad(v.Local.sorderno,"0",7,v.Local.sorderno)
+	'see if the completed by is JGATES
+	f.Intrinsic.String.Build("Select COMPLETED_BY from ATG_WF_LINES where DESCRIPTION = '{0}' and META_1 = '{1}' and LINE = '{2}'","Engineering Review",v.local.sorderno.trim,"1",v.local.ssql)
+	F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+	F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+		'check to see if  JGATES completed the first line, if not inform the user and override the Gen WO
+		f.Intrinsic.Control.If(v.ODBC.conx!rst.FieldValTrim!COMPLETED_BY,<>," JGATES")
+			f.Intrinsic.UI.Msgbox("User JGATES needs to complete the Engineering Review step of the SO Line Level Workflow before a WO can be generated")
+			V.Passed.999999.Set(1)
+			f.Intrinsic.Control.CallSub(unload)
+			f.Intrinsic.Control.ExitSub
+		f.Intrinsic.Control.EndIf
+	f.Intrinsic.Control.Else
+		'if there is no complted by inform the user
+		f.Intrinsic.UI.Msgbox("User JGATES needs to complete the Engineering Review step of the SO Line Level Workflow before a WO can be generated")
+		V.Passed.999999.Set(1)
+		f.Intrinsic.Control.CallSub(unload)
+		f.Intrinsic.Control.ExitSub
+	f.Intrinsic.Control.EndIf
+	f.ODBC.conx!rst.Close
+f.Intrinsic.Control.Else
+	'if the boolean is false let the user know a WO cannot be generated until JGATES completes his portion
+	f.Intrinsic.UI.Msgbox("A WO cannot be generated for that part until user JGATES completes the Engineering Review step of the SO Line Level Workflow")
+	V.Passed.999999.Set(1)
+	f.Intrinsic.Control.CallSub(unload)
+	f.Intrinsic.Control.ExitSub
+f.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("GenWo_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4195_SO_Lines.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub(unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.GenWo.End
+
+Program.Sub.CloseWorkflow.Start
+F.Intrinsic.Control.SetErrorHandler("CloseWorkflow_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+v.Local.iwf.Declare(long)
+v.Local.ssql2.Declare(String)
+v.Local.ssql.Declare(string)
+v.Local.smeta.Declare(string)
+
+'get the ID to create the workflow
+f.Global.WorkFlow.GetTemplateIDFromTitle("SO Line Level Workflow",v.Local.iWF)
+
+'get the part from meta to match up to the header
+f.Intrinsic.String.Build("Select META_1 from ATG_WF_HEADER where TITLE = '{0}' and WF_ID = '{1}'","Data Sheet Verification",v.Local.iwf.Trim,v.Local.ssql)
+F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+	v.Local.smeta.Set(v.ODBC.conx!rst.FieldValTrim!META_1)
+f.Intrinsic.Control.EndIf
+f.ODBC.conx!rst.Close
+
+'check to see if the final step has been completed, if so complete the workflow
+f.Intrinsic.String.Build("Select COMPLETED_BY from ATG_WF_LINES where DESCRIPTION = '{0}' and WF_ID = '{1}' and LINE = '{2}'","Data Sheet Verification",v.Local.iwf.Trim,"3",v.local.ssql)
+F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+	'set the status and completion date
+	f.Intrinsic.String.Build("Select Status, COMPLETION_DATE from ATG_WF_HEADER where WF_ID = '{0}' and TITLE = '{1}' and META_1 = '{2}'",v.Local.iwf.Trim,"Data Sheet Verification",v.Local.smeta.Trim,v.local.ssql2)
+	F.ODBC.Connection!conx.openrecordsetrW("rst2",V.Local.ssql2)
+	F.Intrinsic.Control.If(V.ODBC.conx!rst2.EOF,=,False)
+		'set status as 1 and completion date as the ambient date
+		f.ODBC.conx!rst2.Set!STATUS("1")
+		f.ODBC.conx!rst2.Set!COMPLETION_DATE(v.Ambient.Date)
+		F.ODBC.conx!rst2.Update
+	f.Intrinsic.Control.EndIf
+	f.ODBC.conx!rst2.Close
+f.Intrinsic.Control.EndIf
+f.ODBC.conx!rst.Close
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("CloseWorkflow_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4195_SO_Lines.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub(closeworkflow)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.CloseWorkflow.End
+
+Program.Sub.Comments.Start
+${$0$}$$}$WAW$}$9/26/2016 10:20:32 AM$}$False
+${$3$}$0$}$$}$-1$}$-1$}$$}$1/1/1900$}$Original customer was SMS Millcraft.
+
+This is a re-write of the original script due to many inconsistencies with the original.
+Program.Sub.Comments.End
