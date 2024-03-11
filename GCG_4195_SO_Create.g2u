@@ -1,0 +1,188 @@
+Program.Sub.Preflight.Start
+
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+F.Intrinsic.Control.SetErrorHandler("Main_Err")
+F.Intrinsic.Control.ClearErrors
+v.Local.sorderno.Declare(String)
+v.Local.ssql.Declare(string)
+v.Local.iret.Declare(long)
+v.Local.iwf.Declare(long)
+v.Local.stitle.Declare(string)
+v.Local.istatus.Declare(long)
+v.Local.dduedate.Declare(date)
+v.Local.ssql2.Declare(string)
+
+V.Local.sError.Declare(String)
+'This Workflow will be trigged when a new Sales Order has been created. 
+'The user will be allowed to fill in the Header information of the Sales Order, but the Lines of the Sales Order will not be available until the Sales Order Header line of the Workflow has been signed off. 
+'Coded by: WAW
+'Date: 08/26/2016
+
+'open connection
+F.odbc.Connection!conx.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass,1000000)
+
+'check to see if this is a brand new sales order if so save the order number in the meta 1 field when saved
+f.Intrinsic.Control.If(v.Caller.Hook,=,11872)
+'and if this is a new so
+f.Intrinsic.Control.AndIf(v.Caller.Switches,=,"N")
+	'set the order number
+	v.Local.sorderno.Set(v.Passed.000003)
+	f.Intrinsic.String.LPad(v.Local.sorderno,"0",7,v.Local.sorderno)
+	'query for the meta data to see if there is already a workflow created
+	f.Intrinsic.String.Build("Select * from ATG_WF_HEADER where META_1 = '{0}'",v.Local.sorderno.Trim,v.Local.ssql)
+	F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+	F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,True)
+		'set the due date
+		v.Local.dduedate.Set(v.Ambient.Date)
+		f.Intrinsic.Date.DateAdd("D",1,v.Local.dduedate,v.Local.dduedate)
+		'get the ID to create the workflow
+		f.Global.WorkFlow.GetTemplateIDFromTitle("SO Creation Workflow",v.Local.iWF)
+		f.Intrinsic.Control.If(v.Local.iWF,=,-1)
+			'inform the user there is no template
+			f.Intrinsic.UI.Msgbox("There are no Workflow templates with the title SO Creation Workflow")
+			f.Intrinsic.Control.CallSub(unload)
+		f.Intrinsic.Control.Else
+			'get the title of the template to create the workflow
+			f.Intrinsic.String.Build("Select TITLE, STATUS, T_TYPE from ATG_WFT_HEADER where WFT_ID = '{0}'",v.Local.iWF.Trim,v.Local.ssql2)
+			F.ODBC.Connection!conx.OpenRecordsetRO("rst2",V.Local.sSQL2)
+			F.Intrinsic.Control.If(V.ODBC.conx!rst2.EOF,=,False)
+				v.Local.stitle.Set(v.ODBC.conx!rst2.FieldValTrim!TITLE)
+				v.Local.istatus.Set(v.ODBC.conx!rst2.FieldValTrim!STATUS)
+			f.Intrinsic.Control.EndIf
+			F.ODBC.conx!rst2.Close
+		f.Intrinsic.Control.EndIf	
+		'create the workflow from the template
+		f.Global.WorkFlow.CreateFromTemplate(v.Local.iWF.Trim,v.Local.stitle.trim,v.Ambient.Date,v.Local.dduedate,v.Caller.User,v.Local.istatus.Long,v.Local.iret)
+		'set the SO number as Meta 1
+		F.Global.WorkFlow.SetMetaData(v.Local.iret,1,1,v.Local.sorderno.Trim)
+		'set the order number as Meta 1 for the 2 lines
+		F.Global.WorkFlow.SetMetaData(v.Local.iret,0,1,v.Local.sorderno.Trim)
+		F.Global.WorkFlow.SetMetaData(2,0,1,v.Local.sorderno.Trim)
+	f.Intrinsic.Control.EndIf
+f.Intrinsic.Control.EndIf
+	
+'check to see if the lines button hook is being fired
+f.Intrinsic.Control.If(v.Caller.Hook,=,11810)
+	'if the line hook has been fired check to see if the first step in the workflow has been completed, if not deny access.
+	v.Local.sorderno.Set(v.Passed.000003)
+	f.Intrinsic.String.LPad(v.Local.sorderno,"0",7,v.Local.sorderno)
+	'query for the meta data to see if there is already a workflow created
+	f.Intrinsic.String.Build("Select COMPLETED_BY from ATG_WF_LINES where META_1 = '{0}' and LINE_ID = '{1}'",v.Local.sorderno.Trim,"2",v.Local.ssql)
+	F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+	F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,True)
+		v.Passed.CALLBK.Set(1)
+		f.Intrinsic.UI.Msgbox("The lines for this order cannot be accessed until the Acknowledgement Approval Step in the SO Creation Workflow has been completed")
+		f.ODBC.conx!rst.Close
+		f.Intrinsic.Control.CallSub(unload)	
+		f.Intrinsic.Control.ExitSub
+	f.Intrinsic.Control.EndIf
+	f.ODBC.conx!rst.Close
+f.Intrinsic.Control.EndIf
+
+'check to see if the completed line hook has fired
+f.Intrinsic.Control.If(v.Caller.Hook,=,34700)
+	'call the sales review sub	
+	f.Intrinsic.Control.CallSub(salesreview)	
+f.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Main_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4195_SO_Create.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub(unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Main.End
+
+Program.Sub.Unload.Start
+F.Intrinsic.Control.SetErrorHandler("Unload_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+
+'close connection to the database
+F.ODBC.Connection!conx.Close
+
+F.Intrinsic.Control.End
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Unload_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4195_SO_Create.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.End
+
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Unload.End
+
+Program.Sub.SalesReview.Start
+F.Intrinsic.Control.SetErrorHandler("SalesReview_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+v.Local.iwf.Declare(long)
+v.Local.ssql.Declare(string)
+v.Local.sorderno.Declare(String)
+v.Local.bcomplete.Declare(boolean, False)
+v.Local.scompletedby.Declare(String)
+v.Local.ssalessql.Declare(String)
+
+'get the ID
+f.Global.WorkFlow.GetIDFromTitle("SO Creation Workflow",v.Local.iWF)
+
+'query for the order no from the meta data
+f.Intrinsic.String.Build("Select META_1 from ATG_WF_HEADER where TITLE = '{0}'","SO Creation Workflow",v.Local.ssql)
+F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+	v.Local.sorderno.Set(v.odbc.conx!rst.fieldvaltrim!META_1)
+f.Intrinsic.Control.EndIf
+f.ODBC.conx!rst.Close
+
+'query for the completed by to make sure it is the salesperson
+f.Intrinsic.String.Build("Select COMPLETED_BY from ATG_WF_LINES where META_1 = '{0}' and LINE_ID = '{1}'",v.Local.sorderno.Trim,"1",v.Local.ssql)
+F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,false)
+	v.Local.scompletedby.Set(v.ODBC.conx!rst.FieldValTrim!COMPLETED_BY)
+	'query for the sales person
+	f.Intrinsic.String.Build("Select SALESPERSON from V_ORDER_HEADER where ORDER_NO = '{0}'",v.Local.sorderno.Trim,v.Local.ssalessql)
+	F.ODBC.Connection!conx.openrecordsetro("rst2",V.Local.ssalessql)
+	F.Intrinsic.Control.If(V.ODBC.conx!rst2.EOF,=,false)
+		'if they equal set the boolean as true
+		f.Intrinsic.Control.If(v.Local.scompletedby,=,v.ODBC.conx!rst2.FieldValTrim!SALESPERSON)
+			v.Local.bcomplete.Set(True)
+		f.Intrinsic.Control.EndIf
+	f.Intrinsic.Control.EndIf
+f.Intrinsic.control.EndIf
+
+'if the b complete is true then mark the line as complete otherwise stop it
+f.Intrinsic.Control.If(v.Local.bcomplete,=,True)
+f.Intrinsic.Control.Else
+	'inform the user that the person signing off doesn't match the sales person
+	f.Intrinsic.UI.Msgbox("The Salesperson for this order needs to be the one to sign off on this task")
+	V.Passed.999999.Set(1)
+	f.Intrinsic.Control.CallSub(unload)
+f.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("SalesReview_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4195_SO_Create.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub(unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.SalesReview.End
+
+Program.Sub.Comments.Start
+${$0$}$$}$WAW$}$9/26/2016 8:02:13 AM$}$True
+Program.Sub.Comments.End
