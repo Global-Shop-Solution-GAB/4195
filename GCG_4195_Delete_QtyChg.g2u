@@ -1,0 +1,344 @@
+Program.Sub.Preflight.Start
+Variable.Global.iWF.Declare(Long,0)
+
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+F.Intrinsic.Control.SetErrorHandler("Main_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+
+
+'If the Line is deleted or the Quantity changed then the Revise Sales Order line will need to be signed off by the user before proceeding. 
+'Coded by: WAW
+'Date: 09/27/2016
+
+'open connection
+F.odbc.Connection!conx.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass,1000000)
+
+'if a line is deleted
+f.Intrinsic.Control.If(v.Caller.Hook,=,12240)
+	f.Intrinsic.Control.CallSub(checks)
+f.Intrinsic.Control.ElseIf(v.Caller.Hook,=,12120)
+	f.Intrinsic.Control.CallSub(checks)
+f.Intrinsic.Control.ElseIf(v.Caller.Hook,=,34700)
+	f.Intrinsic.Control.CallSub(checks)
+f.Intrinsic.Control.ElseIf(v.Caller.Hook,=,34701)
+	f.Intrinsic.Control.CallSub(checks)
+f.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Main_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4195_Delete_QtyChg.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Main.End
+
+Program.Sub.Unload.Start
+F.Intrinsic.Control.SetErrorHandler("Unload_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+
+'close connection to the database
+F.ODBC.Connection!conx.Close
+
+F.Intrinsic.Control.End
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Unload_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4195_Delete_QtyChg.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.End
+
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Unload.End
+
+Program.Sub.Checks.Start
+F.Intrinsic.Control.SetErrorHandler("Checks_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+v.Local.iid.Declare(long)
+v.Local.sRMA.Declare(string)
+v.Local.iret.Declare(long,0)
+v.Local.stitle.Declare(string)
+v.Local.ssql.Declare(string)
+v.Local.itype.declare(long)
+v.Local.dduedate.Declare(date)
+v.Local.istatus.Declare(long)
+v.Local.sline.declare(string)
+v.Local.spart.Declare(string)
+v.Local.srev.Declare(string)
+v.Local.sloc.Declare(string)
+v.Local.iholder.Declare(long)
+
+'get the ID to create the workflow
+f.Global.WorkFlow.GetTemplateIDFromTitle("SO Line Cancellation or Quantity Changes Workflow",v.Global.iWF)
+f.Intrinsic.Control.If(v.Global.iWF,=,-1)
+	'inform the user there is no template
+	f.Intrinsic.UI.Msgbox("There are no Workflow templates with the title SO Line Cancellation or Quantity Changes Workflow")
+	f.Intrinsic.Control.CallSub(unload)
+f.Intrinsic.Control.Else
+	'get the title of the template to create the workflow
+	f.Intrinsic.String.Build("Select TITLE, STATUS, T_TYPE from ATG_WFT_HEADER where WFT_ID = '{0}'",v.Global.iWF.Trim,v.Local.ssql)
+	F.ODBC.Connection!conx.OpenRecordsetRO("rst",V.Local.sSQL)
+	F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+		v.Local.stitle.Set(v.ODBC.conx!rst.FieldValTrim!TITLE)
+		v.Local.istatus.Set(v.ODBC.conx!rst.FieldValTrim!STATUS)
+	f.Intrinsic.Control.EndIf
+	F.ODBC.conx!rst.Close
+f.Intrinsic.Control.EndIf
+
+'create the workflow from the template
+f.Global.WorkFlow.CreateFromTemplate(v.Global.iWF.Trim,v.Local.stitle.trim,v.Ambient.Date,v.Local.dduedate,v.Caller.User,v.Local.istatus.Long,v.Local.iret)
+	
+'Get the user group for that line
+f.Intrinsic.String.Build("Select USER_GROUP, SIGNOFF_USER_GROUP from ATG_WF_LINES where LINE = '{0}' and WF_ID = '{1}'","2",v.Global.iWF.Trim,v.Local.ssql)
+F.ODBC.Connection!conx.OpenRecordsetRO("rst",V.Local.sSQL)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.FieldValTrim!SIGNOFF_USER_GROUP,<>,"")
+	'if the signoff user group is not blank we assume the appropriate user signed off and sales and eng have already been emailed, we move to the engineering review step
+	f.ODBC.conx!rst.Close
+	f.Intrinsic.Control.CallSub(prodreview)
+f.Intrinsic.Control.Else
+	f.Intrinsic.Control.If(v.Caller.User,<>,v.ODBC.conx!rst.FieldValTrim!USER_GROUP)
+		'inform the user that the person signing off doesn't match who it was assigned to
+		f.Intrinsic.UI.Msgbox("You do not match the assigned user to signoff/complete this step, Workflow line not completed")
+		V.Passed.999999.Set(1)
+		f.Intrinsic.Control.CallSub(unload)
+	f.Intrinsic.Control.Else
+		'otherwise the standard system will allow the user to signoff/complete, then we email the engineering and sales teams
+		f.ODBC.conx!rst.Close
+		f.Intrinsic.Control.CallSub(emailsaleseng)	
+	f.Intrinsic.Control.EndIf
+f.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Checks_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4195_Delete_QtyChg.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub(unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Checks.End
+
+Program.Sub.EmailSalesEng.Start
+F.Intrinsic.Control.SetErrorHandler("EmailSalesEng_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+v.Local.sret.Declare(string)
+v.Local.i.Declare(long)
+v.Local.sbody.Declare(string)
+v.Local.iuserid.Declare(long)
+v.Local.ssubject.Declare(string)
+v.Local.ssenderemail.Declare(string)
+v.Local.semail.Declare(string)
+v.Local.susername.Declare(string)
+v.Local.ssecgroup.Declare(string)
+
+v.Local.ssecgroupsql.Declare(string)
+f.Intrinsic.String.Build("Select SEC_GROUP from GCG_4197_MAINT where CATEGORY = '{0}'","Sales",v.Local.ssecgroupsql)
+F.ODBC.Connection!conx.OpenRecordsetRO("rst",V.Local.ssecgroupsql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+	v.Local.ssecgroup.Set(v.ODBC.conx!rst.FieldValTrim!SEC_GROUP)
+f.Intrinsic.Control.EndIf
+f.ODBC.conx!rst.Close
+
+'set the body and the subject of the email
+v.Local.sbody.Set("Sign off has occurred")
+v.Local.ssubject.Set("Sales Order Approval")
+
+'get the e-mails from the Quality and Sales Groups
+f.Global.Security.GetGroupEmails(v.Local.ssecgroup.Trim,v.Local.sret)
+'split the return
+f.Intrinsic.String.Split(v.Local.sret,"*!*",v.Local.sret)
+
+'loop through the emails of the group and notify the users
+f.Intrinsic.Control.For(v.Local.i,v.Local.sret.LBound,v.Local.sret.UBound,1)
+	'get the user ID
+	f.Global.Security.getuserid(v.Caller.User,v.Caller.CompanyCode,v.Local.iuserid)
+	f.Global.Security.GetFullName(v.Caller.CompanyCode,v.Local.susername)
+	f.Global.Security.getuseremail(v.caller.user,v.local.ssenderemail)
+	f.Intrinsic.String.Build("{1}*!*{0}",v.Local.susername.trim,v.Local.ssenderemail.trim,v.local.semail)
+	'send an email to the employee
+	f.Global.Messaging.queuemessage(v.Caller.CompanyCode,v.Local.iuserid.Trim,"",v.Local.ssubject,v.local.semail.Trim,v.local.sret(v.Local.i),v.local.sbody)
+f.Intrinsic.Control.Next(v.Local.i)
+
+f.Intrinsic.String.Build("Select SEC_GROUP from GCG_4197_MAINT where CATEGORY = '{0}'","Engineering",v.Local.ssecgroupsql)
+F.ODBC.Connection!conx.OpenRecordsetRO("rst",V.Local.ssecgroupsql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+	v.Local.ssecgroup.Set(v.ODBC.conx!rst.FieldValTrim!SEC_GROUP)
+f.Intrinsic.Control.EndIf
+f.ODBC.conx!rst.Close
+
+'get the e-mails from the Quality and Sales Groups
+f.Global.Security.GetGroupEmails(v.Local.ssecgroup.Trim,v.Local.sret)
+'split the return
+f.Intrinsic.String.Split(v.Local.sret,"*!*",v.Local.sret)
+
+'loop through the emails of the group and notify the users
+f.Intrinsic.Control.For(v.Local.i,v.Local.sret.LBound,v.Local.sret.UBound,1)
+	'get the user ID
+	f.Global.Security.getuserid(v.Caller.User,v.Caller.CompanyCode,v.Local.iuserid)
+	f.Global.Security.GetFullName(v.Caller.CompanyCode,v.Local.susername)
+	f.Global.Security.getuseremail(v.caller.user,v.local.ssenderemail)
+	f.Intrinsic.String.Build("{1}*!*{0}",v.Local.susername.trim,v.Local.ssenderemail.trim,v.local.semail)
+	
+	'send an email to the employee
+	f.Global.Messaging.queuemessage(v.Caller.CompanyCode,v.Local.iuserid.Trim,"",v.Local.ssubject,v.local.semail.Trim,v.local.sret(v.Local.i),v.local.sbody)
+f.Intrinsic.Control.Next(v.Local.i)
+
+'call the unload sub
+f.Intrinsic.Control.CallSub(unload)
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("EmailSalesEng_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4195_Delete_QtyChg.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub(unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.EmailSalesEng.End
+
+Program.Sub.ProdReview.Start
+F.Intrinsic.Control.SetErrorHandler("ProdReview_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+v.Local.sret.Declare(string)
+v.Local.i.Declare(long)
+v.Local.sbody.Declare(string)
+v.Local.iuserid.Declare(long)
+v.Local.ssubject.Declare(string)
+v.Local.ssenderemail.Declare(string)
+v.Local.semail.Declare(string)
+v.Local.susername.Declare(string)
+v.Local.ssql.Declare(string)
+v.Local.ssecgroup.declare(String)
+v.Local.ssecgroupsql.Declare(String)
+v.Local.iwf.Declare(long)
+v.Local.smsg.Declare(string)
+
+'check to make sure the engineering review is completed
+'get the ID to create the workflow
+f.Global.WorkFlow.GetTemplateIDFromTitle("SO Line Cancellation or Quantity Changes Workflow",v.Local.iWF)
+
+'see if the first step has been completed
+f.Intrinsic.String.Build("Select COMPLETED_BY from ATG_WF_LINES where DESCRIPTION = '{0}' and WF_ID = '{1}' and LINE = '{2}'","SO Acknowledgement Approval",v.Local.iwf.Trim,"2",v.local.ssql)
+F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,<>,False)
+	'inform the user the user assigned to the task needs to be the one to sign off
+	f.Intrinsic.String.Build("{0} {1}","The following SO Acknowledgement Approval step needs to be completed","prior to completing the Production Control Review Step",v.Local.smsg)
+	f.Intrinsic.UI.Msgbox(v.Local.smsg.Trim)
+	V.Passed.999999.Set(1)
+	f.ODBC.conx!rst.Close
+	f.Intrinsic.Control.CallSub(unload)	
+f.Intrinsic.Control.EndIf
+f.ODBC.conx!rst.Close
+
+'check to see if the production review step has already been completed, if so move on to the next step
+'see if the first step has been completed
+f.Intrinsic.String.Build("Select COMPLETED_BY from ATG_WF_LINES where DESCRIPTION = '{0}' and WF_ID = '{1}' and LINE = '{2}'","Production Control Review",v.Local.iwf.Trim,"3",v.local.ssql)
+F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+	f.ODBC.conx!rst.Close
+	f.Intrinsic.Control.CallSub(salesreview)
+f.Intrinsic.Control.End
+
+f.ODBC.conx!rst.Close
+
+'set the body and the subject of the email
+f.Intrinsic.String.Build("{0}{1}","Please check your Workflows and complete any oustanding ","steps.",v.Local.sbody)
+v.Local.ssubject.Set("Production Control Review")
+
+'get the user ID
+f.Global.Security.getuserid(v.Caller.User,v.Caller.CompanyCode,v.Local.iuserid)
+f.Global.Security.GetFullName(v.Caller.CompanyCode,v.Local.susername)
+f.Global.Security.getuseremail(v.caller.user,v.local.ssenderemail)
+f.Intrinsic.String.Build("{1}*!*{0}",v.Local.susername.trim,v.Local.ssenderemail.trim,v.local.semail)
+
+'send an email to the user
+f.Global.Messaging.queuemessage(v.Caller.CompanyCode,v.Local.iuserid.Trim,"",v.Local.ssubject,v.local.semail.Trim,v.local.sret(v.Local.i),v.local.sbody)
+
+'mark the line as completed *note we dont have this function working properly
+f.Intrinsic.String.Build("Select COMPLETED_BY from ATG_WF_LINES where DESCRIPTION = '{0}' and WF_ID = '{1}' and LINE = '{3}'","Production Control Review",v.Local.iwf.Trim,"3",v.local.ssql)
+F.ODBC.Connection!conx.openrecordsetrw("rst",V.Local.ssql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,True)
+	F.ODBC.conx!rst.Set!COMPLETED_BY(v.Caller.User)
+	F.ODBC.conx!rst.Update
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("ProdReview_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4195_Delete_QtyChg.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub(unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.ProdReview.End
+
+Program.Sub.SalesReview.Start
+F.Intrinsic.Control.SetErrorHandler("SalesReview_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+v.Local.iwf.Declare(long)
+v.Local.ssql.Declare(String)
+v.Local.smsg.Declare(String)
+
+'get the ID to create the workflow
+f.Global.WorkFlow.GetTemplateIDFromTitle("SO Line Revision Workflow",v.Local.iWF)
+
+'see if the first step has been completed
+f.Intrinsic.String.Build("Select USER_GROUP from ATG_WF_LINES where DESCRIPTION = '{0}' and WF_ID = '{1}' and LINE = '{2}'","Sales Review",v.Local.iwf.Trim,"4",v.local.ssql)
+F.ODBC.Connection!conx.openrecordsetro("rst",V.Local.ssql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.FieldValTrim!USER_GROUP,<>,v.Caller.User)
+	'inform the user the user assigned to the task needs to be the one to sign off
+	f.Intrinsic.String.Build("{0} {1}","The Salesperson needs to sign off on","the Sales Review Step",v.Local.smsg)
+	f.Intrinsic.UI.Msgbox(v.Local.smsg.Trim)
+	V.Passed.999999.Set(1)
+	f.ODBC.conx!rst.Close
+	f.Intrinsic.Control.CallSub(unload)	
+f.Intrinsic.Control.EndIf
+f.ODBC.conx!rst.Close
+
+'this will complete all checks for this workflow
+f.Intrinsic.Control.CallSub(unload)
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("SalesReview_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4195_Delete_QtyChg.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub(unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.SalesReview.End
+
+Program.Sub.Comments.Start
+${$0$}$$}$WAW$}$9/27/2016 9:37:33 AM$}$True
+${$3$}$0$}$$}$-1$}$-1$}$$}$1/1/1900$}$Original customer was SMS Millcraft.
+
+This is a re-write of the original script due to many inconsistencies with the original.
+Program.Sub.Comments.End
